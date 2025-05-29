@@ -143,7 +143,7 @@ impl DCareDevice {
     }
 
     pub async fn check_interval(&mut self, server_addr: &str, token_pid: &str) -> Result<(), anyhow::Error> {
-        if self.need_refresh || self.last_refresh_time.is_some_and(|t| t.elapsed().as_secs() > 60) {
+        if self.need_refresh || self.last_refresh_time.is_some_and(|t| t.elapsed().as_secs() > 30) {
             let instant = Instant::now();
             self.need_refresh = false;
             self.last_refresh_time = Some(Instant::now());
@@ -184,6 +184,7 @@ impl DCareDevice {
                 let notifier = json_val.get("Notifier").and_then(|v| v.as_i64()).unwrap_or(0);
                 match ev_type {
                     "AlarmAdded" | "AlarmRemoved" => {
+                        self.need_refresh = true;
                         let alarm_obj_ref = json_val
                             .get("Alarm")
                             .and_then(|v| v.as_i64())

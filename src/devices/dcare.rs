@@ -12,7 +12,7 @@ const DATA_FOLDER: &str = "data";
 const LOGIN_CACHE_FILENAME: &str = "login_cache.json";
 const LOGIN_CACHE_PATH: &str = const_str::concat!(DATA_FOLDER, "/", LOGIN_CACHE_FILENAME);
 
-pub(crate) async fn run(pin_base: u64) -> Result<(), anyhow::Error> {
+pub(crate) async fn run() -> Result<(), anyhow::Error> {
     let args = &(*crate::ARGS);
     const MAX_DATAGRAM_SIZE: usize = 65_507;
 
@@ -56,7 +56,7 @@ pub(crate) async fn run(pin_base: u64) -> Result<(), anyhow::Error> {
     let mut devices = Vec::with_capacity(args.count as usize);
     let token_pid = format!("&token={token}&pid={pid}");
     for idx in 0..args.count {
-        let pin = pin_base + idx;
+        let pin = args.dev_id_base + idx;
         if let Ok(mut device) = DCareDevice::new(server_addr, pin).await {
             match device.initialize(server_addr, &token_pid).await {
                 Ok(_) => {

@@ -15,7 +15,7 @@ macro_rules! log_prefix {
 macro_rules! log(
     ($level:expr, $($arg:tt)*) => {
         if ($level as u8) <= (*$crate::ARGS).verbosity {
-            println!("{}{}",$crate::log_prefix!($level as u8), format!($($arg)*));
+            println!("{}\t{}{}",chrono::Local::now().format("%Y-%m-%d %H:%M:%S.%3f"),$crate::log_prefix!($level as u8), format!($($arg)*));
         }
     };
 );
