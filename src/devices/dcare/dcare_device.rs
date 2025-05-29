@@ -1,5 +1,7 @@
 use crate::log;
 
+use ahash::AHashSet;
+use rand::{distr::Alphanumeric, Rng as _};
 use serde_json::json;
 use tokio::time::{sleep, Instant};
 use std::net::Ipv4Addr;
@@ -11,33 +13,45 @@ pub struct DCareDevice {
     pub socket: tokio::net::UdpSocket,
     pub http_client: reqwest::Client,
     pub pin: u64,
-    pub last_keep_alive: Instant,
     pub line_id: u64,
     pub line_name: Option<String>,
     pub db_id: u64,
     pub obj_ref: i64,
     pub status: i64,
+    pub register_id: i64,
     pub contact_id: u64,
+    pub unique_token: Option<String>,
+    pub udp_ka_ack: String,
+    pub need_refresh: bool,
+    pub last_refresh_time: Option<Instant>,
+    pub connected_alarms: AHashSet<i64>,
 }
 
+
 impl DCareDevice {
-    pub async fn new(server_addr: &str) -> Result<Self, anyhow::Error> {
+    pub async fn new(server_addr: &str, pin: u64) -> Result<Self, anyhow::Error> {
         let socket = tokio::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
         socket.connect(server_addr).await?;
         let http_client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(20))
             .build()?;
+
         Ok(Self {
             socket,
             http_client,
-            pin: 0,
-            last_keep_alive: Instant::now(),
+            pin,
+            unique_token : None,
             line_id: 0,
             line_name: None,
             db_id: 0,
+            register_id: 0,
             obj_ref: 0,
             status: 0,
             contact_id: 0,
+            udp_ka_ack: Self::get_udp_ka_ack(pin),
+            need_refresh: true,
+            last_refresh_time: None,
+            connected_alarms: AHashSet::new(),
         })
     }
 
@@ -56,39 +70,39 @@ impl DCareDevice {
     }
 
 
-    pub fn need_keep_alive(&mut self) -> bool {
-        if self.last_keep_alive.elapsed().as_secs() >= 3 {
-            self.last_keep_alive = Instant::now();
-            true
-        } else {
-            false
-        }
-    }
-
-    pub async fn send_keep_alive(&mut self) {
-        self.socket
-            .send(&[0x00, 0x00, 0x00, 0x00])
-            .await.ok();
-    }
-
-
     #[inline]
-    fn get_device_id(&self) -> String {
-        format!("__SIM_DCARE_{:03}", self.pin)
+    fn get_device_id(pin: u64) -> String {
+        format!("__SIM_DCARE_{:03}", pin)
     }
 
     #[inline]
-    fn get_device_name(&self) -> String {
-        format!("DcareEX Sim {:03}", self.pin)
+    fn get_device_name(pin: u64) -> String {
+        format!("DcareEX Sim {:03}", pin)
+    }
+
+    #[inline]
+    fn get_udp_register(&self) -> String {
+        json!({
+            "Type": "Register",
+            "DeviceId": Self::get_device_id(self.pin),
+            "ObjectType": self.unique_token,
+        }).to_string()
+    }
+
+    #[inline]
+    fn get_udp_ka_ack(pin: u64) -> String {
+        json!({
+            "Type": "Ack",
+            "DeviceId": Self::get_device_id(pin),
+        }).to_string()
     }
 
     pub async fn initialize(
         &mut self,
-        pin: u64,
         server_addr: &str,
         token_pid: &str,
     ) -> Result<(), anyhow::Error> {
-        self.pin = pin;
+        
         self.request_dcare_line_id(server_addr, token_pid).await?;
         self.request_dcare_line_name(server_addr, token_pid).await?;
         self.request_device_or_new(server_addr, token_pid).await?;
@@ -100,7 +114,9 @@ impl DCareDevice {
         if self.contact_id == 0 {
             self.request_sign_in(server_addr, token_pid).await?;
         }
-        self.last_keep_alive = Instant::now();
+        self.socket.send(
+            self.get_udp_register().as_bytes(),
+        ).await?;
         Ok(())
     }
 
@@ -108,12 +124,111 @@ impl DCareDevice {
         &mut self, 
         server_addr: &str,
         token_pid: &str
-    ) -> Result<(), anyhow::Error> {
+    )  {
+        if self.register_id != 0 {
+            if let Err(err) = self.request_bulk_connect(server_addr, token_pid, false).await {
+                log!(0, "[DCare_{:03}] Failed to disconnect bulk from server: {err}", self.pin);
+            }
+        } 
         if self.contact_id > 0 {
-            self.request_sign_out(server_addr, token_pid).await?;
+            if let Err(err) = self.request_sign_out(server_addr, token_pid).await {
+                log!(0, "[DCare_{:03}] Failed to sign out contact: {err}", self.pin);
+            }
         }
         if self.status == 1 {
-            self.request_stop_device(server_addr, token_pid).await?;
+            if let Err(err) =  self.request_stop_device(server_addr, token_pid).await {
+                log!(0, "[DCare_{:03}] Failed to stop device: {err}", self.pin);
+            }
+        }
+    }
+
+    pub async fn check_interval(&mut self, server_addr: &str, token_pid: &str) -> Result<(), anyhow::Error> {
+        if self.need_refresh || self.last_refresh_time.is_some_and(|t| t.elapsed().as_secs() > 60) {
+            let instant = Instant::now();
+            self.need_refresh = false;
+            self.last_refresh_time = Some(Instant::now());
+            self.request_refresh_alarm_list(server_addr, token_pid).await?;
+            let elapsed = instant.elapsed().as_millis();
+            let level = match elapsed {
+                0..200 => 4,
+                200..500 => 3,
+                500..1000 => 2,
+                _ => 1,
+            };
+            log!(level, "[DCare_{:03}] Refreshing Alarm List took: {} ms", self.pin, elapsed);
+        }
+        Ok(())
+    }
+
+    pub async fn process_recv_udp(&mut self, server_addr: &str, token_pid: &str, data: &[u8]) -> Result<(), anyhow::Error> {
+        let json_val :serde_json::Value = serde_json::from_slice(data)
+            .map_err(|e| anyhow::anyhow!("Failed to parse data as JSON: {e}"))?;
+        if json_val.get("KeepAlive").is_some() {
+            log!(4, "[DCare_{:03}] KeepAlive received", self.pin);
+            self.socket.send(self.udp_ka_ack.as_bytes()).await?;
+        } else {
+            if let Some(registered) = json_val.get("Registered").map(|v| v.is_boolean() && v.as_bool().unwrap_or(false)) {
+                if !registered {
+                    return Err(anyhow::anyhow!("Device registered: false"));
+                }
+                self.register_id = json_val
+                    .get("Object")
+                    .and_then(|v| v.as_str()?.parse::<i64>().ok())
+                    .unwrap_or(0);
+                if self.register_id == 0 {
+                    return Err(anyhow::anyhow!("Device registration success but invalid Object: {:?}", json_val .get("Object")));
+                }
+                log!(3, "[DCare_{:03}] Registered OK -> register_id: {}", self.pin, self.register_id);
+                self.request_bulk_connect(server_addr, token_pid, true).await?;
+            } else if let Some(ev_type) = json_val.get("EventType").and_then(|v| v.as_str()) {
+                let notifier = json_val.get("Notifier").and_then(|v| v.as_i64()).unwrap_or(0);
+                match ev_type {
+                    "AlarmAdded" | "AlarmRemoved" => {
+                        let alarm_obj_ref = json_val
+                            .get("Alarm")
+                            .and_then(|v| v.as_i64())
+                            .ok_or_else(|| anyhow::anyhow!("N:{notifier} {ev_type} missing 'Alarm' in message: {json_val}"))?;
+                        let alarm_id = json_val
+                            .get("Id")
+                            .and_then(|v| v.as_i64())
+                            .ok_or_else(|| anyhow::anyhow!("N:{notifier} {ev_type} missing 'Id' in message: {json_val}"))?;
+                        log!(3, "[DCare_{:03}] N:{notifier} {ev_type}:{alarm_obj_ref} -> Id:{alarm_id}", self.pin);
+                        if ev_type == "AlarmAdded" {
+                            if !self.connected_alarms.contains(&alarm_obj_ref) {
+                                self.request_bulk_connect_alarm_state_changed(server_addr, token_pid, alarm_obj_ref, true).await?;
+                                self.connected_alarms.insert(alarm_obj_ref);
+                            }
+                        } else if self.connected_alarms.remove(&alarm_obj_ref) {
+                            self.request_bulk_connect_alarm_state_changed(server_addr, token_pid, alarm_obj_ref, false).await?;
+                        }
+                    }
+                    "StateChanged" | "AlarmReceived" => {
+                        self.need_refresh = true;
+                        log!(4, "[DCare_{:03}] N:{notifier} {ev_type} -> {json_val}", self.pin);
+                    }
+                    _ => {
+                        log!(4, "[DCare_{:03}] N:{notifier} {ev_type} -> {json_val}", self.pin);
+                    }
+                }
+            }
+            else if json_val.get("Activity").is_some() {
+                let title = json_val.get("Title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                if let Some(body) = json_val.get("Body").and_then(|v| v.as_str()) {
+                    log!(3, "[DCare_{:03}] Activity Notify received: {title} : {body}", self.pin);
+                } else {
+                    log!(4, "[DCare_{:03}] Activity Notify received: {title}", self.pin);
+                }
+            }
+            else {
+                log!(4, "[DCare_{:03}] Unknown json received: {json_val}", self.pin);
+            }
+            if let Some(seq_no) = json_val.get("SeqNo").and_then(|v| v.as_u64()) {
+                log!(4, "[DCare_{:03}] Ack SeqNo: {seq_no}", self.pin);
+                let ack_body = json!({"Type": "Ack", "SeqNo": seq_no}).to_string();
+                self.socket.send(ack_body.as_bytes()).await?;
+            }
         }
         Ok(())
     }
@@ -225,8 +340,8 @@ impl DCareDevice {
     }
     
     async fn request_device_or_new(&mut self, server_addr: &str, token_pid: &str) -> Result<(), anyhow::Error> {
-        let device_id = self.get_device_id();
-        let device_name = self.get_device_name();
+        let device_id = Self::get_device_id(self.pin);
+        let device_name = Self::get_device_name(self.pin);
         let parse_res: PoltysResponse = self
         .post_request(
             server_addr,
@@ -321,7 +436,13 @@ impl DCareDevice {
             .ok_or_else(|| {
                 anyhow::anyhow!("get details status is not a valid number in response: {dev}")
             })?;
-        log!(3, "[DCare_{0:03}] GetDetails OK -> DB ID: {1}, ObjectRef: {2} Status: {3}", self.pin, self.db_id, self.obj_ref, self.status);
+        let settings = dev.get("Settings")
+            .and_then(|s| s.as_str().map(|s| s.to_string()).and_then(|s| serde_json::from_str::<serde_json::Value>(s.as_str()).ok()))
+            .unwrap_or_default();
+        self.unique_token = settings.get("CloudId")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        log!(3, "[DCare_{0:03}] GetDetails OK -> DB ID: {1}, ObjectRef: {2} Status: {3} ClientID:{4:?}", self.pin, self.db_id, self.obj_ref, self.status, self.unique_token);
         Ok(())
     }
     
@@ -381,6 +502,82 @@ impl DCareDevice {
         Ok(())
     }
     
+    fn create_bulk_connect_body(&self, connect: bool) ->serde_json::Value {
+        let src_ep_filter = format!(r#"{{"SrcEndpoint":{}}}"#, self.db_id);
+        json!([
+            {"Cmd::ConnectionInfo":{"ObjectRef":self.obj_ref,"EventType":"AlarmAdded","Userdata":"Active","Connect":connect}},
+            {"Cmd::ConnectionInfo":{"ObjectRef":self.obj_ref,"EventType":"AlarmRemoved","Userdata":"Active","Connect":connect}},
+            {"Cmd::ConnectionInfo":{"ObjectRef":self.obj_ref,"EventType":"AlarmReceived","Userdata":"Active","Connect":connect}},
+            {"Cmd::ConnectionInfo":{"ObjectRef":self.obj_ref,"EventType":"MutedAlarmChanged","Userdata":"Active","Connect":connect}},
+            {"Cmd::ConnectionInfo":{"ObjectType":"Routing","ObjectName":"Activities","EventType":"Created","Filter":src_ep_filter,"Userdata":"Assist","Connect":connect}},
+            {"Cmd::ConnectionInfo":{"ObjectType":"Routing","ObjectName":"Activities","EventType":"StateChanged","Filter":src_ep_filter,"Userdata":"Assist","Connect":connect}},
+            {"Cmd::ConnectionInfo":{"ObjectType":"Routing","ObjectName":"Activities","EventType":"Closing","Filter":src_ep_filter,"Userdata":"Assist","Connect":connect}},
+            {"Cmd::ConnectionInfo":{"ObjectType":"Devices","ObjectName":"Endpoints","EventType":"EndpointChanged","Userdata":"Active","Connect":connect}},
+            {"Cmd::ConnectionInfo":{"ObjectType":"DCC","ObjectName":"Contacts","EventType":"ChangedContact","Userdata":"Active","Connect":connect}},
+        ])
+    }
+
+    fn create_bulk_connect_alarm_state_changed_body(&self, alarm_id: i64, connect: bool) -> serde_json::Value {
+        json!([{"Cmd::ConnectionInfo":{"ObjectRef":alarm_id,"EventType":"StateChanged","Userdata":"Active","Connect":connect}}])
+    }
+
+    async fn request_bulk_connect_alarm_state_changed(
+        &self,
+        server_addr: &str,
+        token_pid: &str,
+        alarm_obj_ref: i64,
+        connect: bool,
+    ) -> Result<(), anyhow::Error> {
+        let body = self.create_bulk_connect_alarm_state_changed_body(alarm_obj_ref, connect);
+        let response: PoltysResponse = self
+            .post_request(
+                server_addr,
+                token_pid,
+                ObjTypeOrRef::ObjectRef(self.register_id),
+                "BulkConnect",
+                serde_json::to_string(&body)?,
+            )
+            .await?;
+        match response {
+            PoltysResponse::Err(poltys_response_error) => {
+                Err(anyhow::anyhow!("BulkConnect Alarm {alarm_obj_ref} failed: {poltys_response_error}"))
+            }
+            PoltysResponse::Other(o) => {
+                log!(4, "[DCare_{:03}] BulkConnect Alarm {alarm_obj_ref} OK -> {o}", self.pin);
+                Ok(())
+            }
+            _ => Err(anyhow::anyhow!("BulkConnect Alarm {alarm_obj_ref} Unexpected response type: {:?}", response)),
+        }
+    }
+
+    async fn request_bulk_connect(
+        &self,
+        server_addr: &str,
+        token_pid: &str,
+        connect: bool,
+    ) -> Result<(), anyhow::Error> {
+        let body = self.create_bulk_connect_body(connect);
+        let response: PoltysResponse = self
+            .post_request(
+                server_addr,
+                token_pid,
+                ObjTypeOrRef::ObjectRef(self.register_id),
+                "BulkConnect",
+                serde_json::to_string(&body)?,
+            )
+            .await?;
+        match response {
+            PoltysResponse::Err(poltys_response_error) => {
+                Err(anyhow::anyhow!("BulkConnect failed: {poltys_response_error}"))
+            }
+            PoltysResponse::Other(o) => {
+                log!(4, "[DCare_{:03}] BulkConnect OK -> {o}", self.pin);
+                Ok(())
+            }
+            _ => Err(anyhow::anyhow!("BulkConnect Unexpected response type: {:?}", response)),
+        }
+    }
+
     fn create_endpoint_body(
         &self,
         device_id: &str,
@@ -415,6 +612,14 @@ impl DCareDevice {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let settings = json!({
+             "AppName": "DCare", 
+             "CloudId":  rand::rng().sample_iter(&Alphanumeric).take(64).map(char::from).collect::<String>(), 
+             "Platform": "android", 
+             "GenericPush": true, 
+             "PlatformVer": "99", 
+             "SoftwareVer": 999}
+            );
         json!({
             "New": {
                 "Devices::Endpoint": {
@@ -423,9 +628,72 @@ impl DCareDevice {
                     "Description": "Simulated DCare device",
                     "Line": { "Devices::Line": {"Name": line_name} },
                     "EndpointType": { "Devices::EndpointType": {"Name": "DCareDevice", "IsDestination": true} },
-                    "EndpointAlarm": ep_alarms
+                    "EndpointAlarm": ep_alarms,
+                    "Settings": settings.to_string(),
                 }
             }
         })
+    }
+    
+    fn create_request_get_chats_body(alarm_id: u64) -> serde_json::Value {
+        json!({"Active":true,"Start":0,"Length":1000,
+            "Condition":format!("{} {alarm_id} {}", 
+                "(JSON_EXTRACT({{A}}ActivityEvents.Data, '$.chat') IS NOT NULL OR JSON_EXTRACT({{A}}ActivityEvents.Data, '$.audio') IS NOT NULL) AND (({{A}}ActivityEvents.fkeyId_Activity =", 
+                "AND {{A}}ActivityEvents.StartDate > '2000-01-01T12:00:00'))"),
+            "Columns":["COUNT({{A}}ActivityEvents.fkeyId_Activity), ANY_VALUE({{A}}Activities.Id)"],
+            "Join":"LEFT JOIN {{A}}ActivityEvents ON {{A}}ActivityEvents.fkeyId_Activity = {{A}}Activities.Id ",
+            "GroupBy":"{{A}}ActivityEvents.fkeyId_Activity"
+        })
+    }
+
+    async fn request_refresh_alarm_list(&self, server_addr: &str, token_pid: &str) -> Result<(), anyhow::Error> {
+        let video_sources = self.post_request::<serde_json::Value>(
+            server_addr, 
+            token_pid, 
+            ObjTypeOrRef::Type("Devices::Endpoints"), 
+            "ListBySkill", 
+            r#"{"SkillType":"LOCATION","Condition":"EndpointTypes.Name = 'VideoSource'","Skill":{"ancestorOrigins":{},"href":"https://localhost/menu/activealarms","origin":"https://localhost","protocol":"https:","host":"localhost","hostname":"localhost","port":"","pathname":"/menu/activealarms","search":"","hash":""}}"#.to_string()
+        ).await?;
+        log!(4, "[DCare_{:03}] AlarmRefresh: ListBySkill Video OK -> {video_sources}", self.pin);
+        let alarm_list = self.post_request::<serde_json::Value>(
+            server_addr, 
+            token_pid, 
+            ObjTypeOrRef::ObjectRef(self.obj_ref),
+            "ActiveAlarmList",
+            r#"{"AcceptedByMe":true,"WithEvents":true}"#.to_string()
+        ).await?;
+        let alarm_ids: Vec<_> = alarm_list.as_array().map(|alarms| {
+            alarms.iter().filter_map(|alarm| {
+                alarm.get("Routing::Activity").and_then(|v| v.get("Id")).and_then(|v| v.as_u64())
+            }).collect::<Vec<_>>()
+        }).unwrap_or_default();
+        log!(4, "[DCare_{:03}] AlarmRefresh: ActiveAlarmList OK -> {alarm_ids:?}", self.pin);
+        for alarm_id in alarm_ids {
+            let active_chats = self.post_request::<serde_json::Value>(
+                server_addr, 
+                token_pid, 
+                ObjTypeOrRef::Type("Routing::Activities"), 
+                "List", 
+                Self::create_request_get_chats_body(alarm_id).to_string()
+            ).await?;
+            log!(4, "[DCare_{:03}] AlarmRefresh: GetChats AlarmId:{alarm_id} OK -> {active_chats}", self.pin);
+        }
+        let active_details = self.post_request::<serde_json::Value>(
+            server_addr, 
+            token_pid, 
+            ObjTypeOrRef::ObjectRef(self.obj_ref),
+            "ActiveAlarmListDetails",
+            "{}".to_string()
+        ).await?;
+        log!(4, "[DCare_{:03}] AlarmRefresh: ActiveAlarmListDetails OK -> {active_details}", self.pin);
+        let muted_alarms = self.post_request::<serde_json::Value>(
+            server_addr, 
+            token_pid, 
+            ObjTypeOrRef::ObjectRef(self.obj_ref),
+            "GetMutedAlarms",
+            "{}".to_string()
+        ).await?;
+        log!(4, "[DCare_{:03}] AlarmRefresh: GetMutedAlarms OK -> {muted_alarms}", self.pin);
+        Ok(())
     }
 }

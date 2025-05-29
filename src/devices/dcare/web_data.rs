@@ -149,21 +149,16 @@ where
         ObjTypeOrRef::ObjectRef(ref_id) => format!("oref={ref_id}"),
         ObjTypeOrRef::Type(otype) => format!("otype={otype}"),
     };
-    log!(4, "post_request body: {body}");
+    log!(5, "post_request body: {body}");
     let req = http_client
         .post(format!(
             "https://{server_addr}/api.pts?{obj}&method={method}{token_pid}"
         ))
         .header(CONTENT_TYPE, "application/json")
         .body(body);
-    log!(4, "DCareDevice::post_request request: {:?}", req);
+    log!(5, "DCareDevice::post_request request: {:?}", req);
     let res = req.send().await?;
     let res_json = res.text().await?;
-    log!(4, "DCareDevice::post_request response: {res_json}");
-    let parse_res = serde_json::from_str::<T>(&res_json)?;
-    log!(
-        4,
-        "DCareDevice::post_request parsed response: {parse_res:?}"
-    );
-    Ok(parse_res)
+    log!(5, "DCareDevice::post_request response: {res_json}");
+    Ok(serde_json::from_str::<T>(&res_json)?)
 }

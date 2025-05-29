@@ -57,8 +57,8 @@ pub(crate) async fn run(pin_base: u64) -> Result<(), anyhow::Error> {
     let token_pid = format!("&token={token}&pid={pid}");
     for idx in 0..args.count {
         let pin = pin_base + idx;
-        if let Ok(mut device) = DCareDevice::new(server_addr).await {
-            match device.initialize(pin, server_addr, &token_pid).await {
+        if let Ok(mut device) = DCareDevice::new(server_addr, pin).await {
+            match device.initialize(server_addr, &token_pid).await {
                 Ok(_) => {
                     log!(
                         2,
@@ -81,7 +81,7 @@ pub(crate) async fn run(pin_base: u64) -> Result<(), anyhow::Error> {
         return Ok(());
     }
 
-    let c_interval = std::time::Duration::from_millis(20);
+    let c_interval = std::time::Duration::from_millis(500);
     let mut check_timer = tokio::time::interval_at(Instant::now() + c_interval, c_interval);
     let mut data = vec![0u8; MAX_DATAGRAM_SIZE];
 
@@ -89,20 +89,23 @@ pub(crate) async fn run(pin_base: u64) -> Result<(), anyhow::Error> {
         tokio::select! {
             _ = check_timer.tick() => {
                 for device in devices.iter_mut() {
-                    if device.need_keep_alive() {
-                        device.send_keep_alive().await;
+                    if let Err(e) =  device.check_interval(server_addr, &token_pid).await {
+                        log!(1, "[DCare_{:03}] Error during check_interval: {}", device.pin, e);
                     }
-
                 }
             }
             _ = async {
                 for device in devices.iter_mut() {
                     match device.socket.recv(&mut data).await {
                         Ok(size) => {
-                            log!(3, "[DCare_{:03}] Received {size} bytes from DCare device", device.pin);
+                            if size > 0 {
+                                if let Err(e) = device.process_recv_udp(server_addr, &token_pid, &data[..size]).await {
+                                    log!(1, "[DCare_{:03}] Error processing udp data: {}", device.pin, e);
+                                }
+                            }
                         }
                         Err(e) => {
-                            log!(1, "Error receiving data: {}", e);
+                            log!(1, "Error receiving udp data: {}", e);
                         }
                     }
                 }
@@ -115,20 +118,7 @@ pub(crate) async fn run(pin_base: u64) -> Result<(), anyhow::Error> {
     }
 
     for device in devices.iter_mut() {
-        if let Err(e) = device.deinitialize(server_addr, &token_pid).await {
-            log!(
-                1,
-                "[DCare_{:03}] Deinitialization failed: {}",
-                device.pin,
-                e
-            );
-        } else {
-            log!(
-                2,
-                "[DCare_{:03}] Device deinitialized successfully",
-                device.pin
-            );
-        }
+        device.deinitialize(server_addr, &token_pid).await;
     }
     tokio::fs::write(LOGIN_CACHE_PATH, serde_json::to_string(&login_res)?).await?;
     Ok(())
