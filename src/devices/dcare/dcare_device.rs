@@ -1,6 +1,7 @@
 use crate::log;
 
 use ahash::AHashSet;
+use itertools::Itertools as _;
 use rand::{distr::Alphanumeric, Rng as _};
 use serde_json::json;
 use tokio::time::{sleep, Instant};
@@ -636,11 +637,12 @@ impl DCareDevice {
         })
     }
     
-    fn create_request_get_chats_body(alarm_id: u64) -> serde_json::Value {
+    fn create_request_get_chats_body(alarm_ids: &[u64]) -> serde_json::Value {
+        let a_cond: String = alarm_ids.iter().map(|aid| {
+            format!("({} = {} AND {})", "{{A}}ActivityEvents.fkeyId_Activity", aid, "{{A}}ActivityEvents.StartDate > '2000-01-01T12:00:00'")
+        }).collect::<Vec<_>>().join(" OR ");
         json!({"Active":true,"Start":0,"Length":1000,
-            "Condition":format!("{} {alarm_id} {}", 
-                "(JSON_EXTRACT({{A}}ActivityEvents.Data, '$.chat') IS NOT NULL OR JSON_EXTRACT({{A}}ActivityEvents.Data, '$.audio') IS NOT NULL) AND (({{A}}ActivityEvents.fkeyId_Activity =", 
-                "AND {{A}}ActivityEvents.StartDate > '2000-01-01T12:00:00'))"),
+            "Condition":format!("{} AND ({a_cond})", "(JSON_EXTRACT({{A}}ActivityEvents.Data, '$.chat') IS NOT NULL OR JSON_EXTRACT({{A}}ActivityEvents.Data, '$.audio') IS NOT NULL)"),
             "Columns":["COUNT({{A}}ActivityEvents.fkeyId_Activity), ANY_VALUE({{A}}Activities.Id)"],
             "Join":"LEFT JOIN {{A}}ActivityEvents ON {{A}}ActivityEvents.fkeyId_Activity = {{A}}Activities.Id ",
             "GroupBy":"{{A}}ActivityEvents.fkeyId_Activity"
@@ -669,32 +671,34 @@ impl DCareDevice {
             }).collect::<Vec<_>>()
         }).unwrap_or_default();
         log!(4, "[DCare_{:03}] AlarmRefresh: ActiveAlarmList OK -> {alarm_ids:?}", self.pin);
-        for alarm_id in alarm_ids {
+
+        if !alarm_ids.is_empty() {
             let active_chats = self.post_request::<serde_json::Value>(
                 server_addr, 
                 token_pid, 
                 ObjTypeOrRef::Type("Routing::Activities"), 
                 "List", 
-                Self::create_request_get_chats_body(alarm_id).to_string()
+                Self::create_request_get_chats_body(&alarm_ids).to_string()
             ).await?;
-            log!(4, "[DCare_{:03}] AlarmRefresh: GetChats AlarmId:{alarm_id} OK -> {active_chats}", self.pin);
+            log!(4, "[DCare_{:03}] AlarmRefresh: GetNewChatsCount OK -> {active_chats}", self.pin);
+            let active_details = self.post_request::<serde_json::Value>(
+                server_addr, 
+                token_pid, 
+                ObjTypeOrRef::ObjectRef(self.obj_ref),
+                "ActiveAlarmListDetails",
+                format!(r#"{{"Condition": "AActivities.Id IN ({})"}}"#, alarm_ids.iter().map(|id| id.to_string()).join(", "))
+            ).await?;
+            log!(4, "[DCare_{:03}] AlarmRefresh: ActiveAlarmListDetails OK -> {active_details}", self.pin);
+            let muted_alarms = self.post_request::<serde_json::Value>(
+                server_addr, 
+                token_pid, 
+                ObjTypeOrRef::ObjectRef(self.obj_ref),
+                "GetMutedAlarms",
+                "{}".to_string()
+            ).await?;
+            log!(4, "[DCare_{:03}] AlarmRefresh: GetMutedAlarms OK -> {muted_alarms}", self.pin);
         }
-        let active_details = self.post_request::<serde_json::Value>(
-            server_addr, 
-            token_pid, 
-            ObjTypeOrRef::ObjectRef(self.obj_ref),
-            "ActiveAlarmListDetails",
-            "{}".to_string()
-        ).await?;
-        log!(4, "[DCare_{:03}] AlarmRefresh: ActiveAlarmListDetails OK -> {active_details}", self.pin);
-        let muted_alarms = self.post_request::<serde_json::Value>(
-            server_addr, 
-            token_pid, 
-            ObjTypeOrRef::ObjectRef(self.obj_ref),
-            "GetMutedAlarms",
-            "{}".to_string()
-        ).await?;
-        log!(4, "[DCare_{:03}] AlarmRefresh: GetMutedAlarms OK -> {muted_alarms}", self.pin);
+        
         Ok(())
     }
 }
