@@ -2,6 +2,7 @@ use core::str;
 
 use crate::log;
 use serde::Serialize;
+use serde_json::json;
 
 use super::web_data::*;
 
@@ -82,6 +83,39 @@ pub async fn login(
             "web_login::login Unexpected response type: {o:?}"
         )),
     }
+}
+
+pub async fn renew_token(admin: &str, mut login_cache: PoltysLoginCache) -> PoltysLoginCache {
+    let body = json!({
+        "AccessToken": login_cache.token,
+        "RefreshToken": login_cache.refresh_token,
+    });
+    log!(4, "web_login::refresh_token request {body}");
+
+    match post_request::<serde_json::Value>(
+        None,
+        admin,
+        "",
+        ObjTypeOrRef::Type("Admin.MainServer"),
+        "RenewToken",
+        body.to_string(),
+    )
+    .await
+    {
+        Ok(res) => {
+            log!(4, "web_login::renew_token OK -> {res}");
+            if let Some(token) = res.get("Token").and_then(|v| v.as_str()) {
+                login_cache.token = token.to_string();
+                login_cache.time = chrono::Utc::now();
+            } else {
+                log!(1, "web_login::renew_token No refresh token in response");
+            }
+        }
+        Err(e) => {
+            log!(1, "web_login::renew_token Error -> {e}");
+        }
+    }
+    login_cache
 }
 
 pub async fn get_pid(server_addr: &str, token: &str) -> anyhow::Result<u32> {

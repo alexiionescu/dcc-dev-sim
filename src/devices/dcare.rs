@@ -1,5 +1,13 @@
-use tokio::time::Instant;
-use web_data::PoltysLoginRes;
+use std::time::Duration;
+
+use chrono::Utc;
+use tokio::{
+    sync::watch,
+    task::JoinSet,
+    time::{Instant, timeout},
+};
+use tokio_util::sync::CancellationToken;
+use web_data::PoltysLoginCache;
 
 use crate::log;
 
@@ -12,50 +20,131 @@ const DATA_FOLDER: &str = "data";
 const LOGIN_CACHE_FILENAME: &str = "login_cache.json";
 const LOGIN_CACHE_PATH: &str = const_str::concat!(DATA_FOLDER, "/", LOGIN_CACHE_FILENAME);
 
+#[derive(Default, Clone)]
+struct WatchData {
+    token: Option<String>,
+}
+
 pub(crate) async fn run() -> Result<(), anyhow::Error> {
     let args = &(*crate::ARGS);
-    const MAX_DATAGRAM_SIZE: usize = 65_507;
 
-    let tstamp = Instant::now();
     tokio::fs::create_dir_all(DATA_FOLDER).await?;
-    let (mut pid, mut login_res) = if let Some(login_res) = tokio::fs::read(LOGIN_CACHE_PATH)
+    let mut login_cache = tokio::fs::read(LOGIN_CACHE_PATH)
         .await
-        .map(|data| serde_json::from_slice::<PoltysLoginRes>(&data).ok())
+        .map(|data| serde_json::from_slice::<PoltysLoginCache>(&data).ok())
         .ok()
-        .flatten()
+        .flatten();
+
+    if login_cache
+        .as_ref()
+        .is_none_or(|c| Utc::now().signed_duration_since(c.time).num_days() > 1)
     {
-        match web_login::get_pid(&login_res.address, &login_res.token).await {
-            Ok(pid) => {
-                log!(1, "[Login] GetPid from cache data succesfull {}", pid);
-                (pid, login_res)
+        let conn_res = web_login::poltys_connect(&args.admin, &args.user, &args.password).await?;
+        let login_res = web_login::login(&args.admin, &conn_res, &args.server).await?;
+        login_cache = Some(PoltysLoginCache::new(conn_res, login_res));
+        log!(
+            0,
+            "[Login] Login OK {} token={} time={}",
+            login_cache.as_ref().unwrap().address,
+            login_cache.as_ref().unwrap().token,
+            login_cache.as_ref().unwrap().time
+        );
+    }
+    let token = login_cache.as_ref().map(|c| &c.token).unwrap().clone();
+    let server_addr = args
+        .server_addr
+        .as_ref()
+        .or(login_cache.as_ref().map(|c| &c.address))
+        .unwrap()
+        .clone();
+
+    let r = 0..args.count;
+    let step = args.count / args.concurrent_jobs;
+    let mut set = JoinSet::new();
+    let ct = CancellationToken::new();
+    let (watcher_tx, watcher_rx) = tokio::sync::watch::channel(WatchData::default());
+
+    let tasks: Vec<_> = r
+        .step_by(step)
+        .map(|start| start..(start + step))
+        .map(|r| {
+            let token = token.clone();
+            let server_addr = server_addr.clone();
+            let ct = ct.clone();
+            let watcher_rx = watcher_rx.clone();
+            set.spawn(async move { run_dev_range(ct, watcher_rx, token, &server_addr, r).await })
+        })
+        .collect();
+
+    let c_interval_daily = Duration::from_secs(86400);
+    let mut check_timer_daily =
+        tokio::time::interval_at(Instant::now() + c_interval_daily, c_interval_daily);
+    loop {
+        tokio::select! {
+            Some(res) = set.join_next() => {
+                if let Err(e) = res {
+                    log!(1, "Error in device task: {}", e);
+                }
             }
-            Err(e) => {
-                log!(0, "[Login] GetPid from cache failed: {}. Relogin", e);
-                (0, login_res)
+            _ = check_timer_daily.tick() => {
+                login_cache = Some(web_login::renew_token(&args.admin, login_cache.take().unwrap()).await);
+                watcher_tx.send_if_modified(|data| {
+                    if data.token.as_deref() != login_cache.as_ref().map(|c| c.token.as_str()) {
+                        log!(3, "[Login] Token changed. Sending to all tasks");
+                        data.token = login_cache.as_ref().map(|c| c.token.clone());
+                        true
+                    }
+                    else {false}
+                });
+            }
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("\nCtrl-C received, shutting down\n");
+
+                break;
             }
         }
-    } else {
-        (0, PoltysLoginRes::default())
-    };
-    if pid == 0 {
-        let conn_res = web_login::poltys_connect(&args.admin, &args.user, &args.password).await?;
-        log!(1, "[Login] Connect succesfull");
-        login_res = web_login::login(&args.admin, &conn_res, &args.server).await?;
-        log!(
-            1,
-            "[Login] Login succesfull {} token={}",
-            login_res.address,
-            login_res.token
-        );
-        pid = web_login::get_pid(&login_res.address, &login_res.token).await?;
-        log!(1, "[Login] GetPid succesfull {}", pid);
     }
-    let token = &login_res.token;
-    let server_addr = args.server_addr.as_ref().unwrap_or(&login_res.address);
+    ct.cancel();
+    if let Err(err) = timeout(Duration::from_secs(10), set.join_all()).await {
+        log!(
+            0,
+            "Timeout while waiting for all tasks to finish gracefully: {}",
+            err
+        );
+        tasks.iter().for_each(|task| {
+            task.abort();
+        });
+        log!(0, "*** All tasks aborted ***");
+    } else {
+        log!(0, "*** All tasks finished successfully ***");
+    }
 
-    let mut devices = Vec::with_capacity(args.count as usize);
-    let token_pid = format!("&token={token}&pid={pid}");
-    for idx in 0..args.count {
+    tokio::fs::write(
+        LOGIN_CACHE_PATH,
+        serde_json::to_string(&login_cache.unwrap())?,
+    )
+    .await?;
+    Ok(())
+}
+
+async fn run_dev_range(
+    ct: CancellationToken,
+    mut watcher_rx: watch::Receiver<WatchData>,
+    mut token: String,
+    server_addr: &str,
+    r: std::ops::Range<usize>,
+) -> Result<(), anyhow::Error> {
+    const MAX_DATAGRAM_SIZE: usize = 65_507;
+    let thread_id = std::thread::current().id();
+
+    let mut pid = web_login::get_pid(server_addr, &token).await?;
+    log!(1, "[Th:{thread_id:?}] GetPid OK {pid} for {r:?}");
+
+    let args = &(*crate::ARGS);
+    let mut devices = Vec::with_capacity(r.len());
+    let mut token_pid = format!("&token={token}&pid={pid}");
+    let tstamp = Instant::now();
+    for idx in r {
         let pin = args.dev_id_base + idx;
         if let Ok(mut device) = DCareDevice::new(server_addr, pin).await {
             match device.initialize(server_addr, &token_pid).await {
@@ -80,13 +169,31 @@ pub(crate) async fn run() -> Result<(), anyhow::Error> {
     if devices.is_empty() {
         return Ok(());
     }
-
     let c_interval = std::time::Duration::from_millis(500);
     let mut check_timer = tokio::time::interval_at(Instant::now() + c_interval, c_interval);
+    let c_interval_10m = std::time::Duration::from_secs(600);
+    let mut check_timer_10m =
+        tokio::time::interval_at(Instant::now() + c_interval_10m, c_interval_10m);
     let mut data = vec![0u8; MAX_DATAGRAM_SIZE];
-
     loop {
         tokio::select! {
+            _ = watcher_rx.changed() => {
+                let mut watch_data = watcher_rx.borrow_and_update().clone();
+                if let Some(new_token) = watch_data.token.take() {
+                    token = new_token;
+                    log!(3, "[Th:{thread_id:?}] New Token received, updating token_pid");
+                    token_pid = format!("&token={token}&pid={pid}");
+                }
+            }
+            _ = check_timer_10m.tick() => {
+                if let Ok(new_pid) = web_login::get_pid(server_addr, &token).await {
+                    if new_pid != pid {
+                        pid = new_pid;
+                        log!(1, "[Th:{thread_id:?}] PID changed from {} to {}, updating token_pid", pid, new_pid);
+                        token_pid = format!("&token={token}&pid={pid}");
+                    }
+                }
+            }
             _ = check_timer.tick() => {
                 for device in devices.iter_mut() {
                     if let Err(e) =  device.check_interval(server_addr, &token_pid).await {
@@ -110,8 +217,7 @@ pub(crate) async fn run() -> Result<(), anyhow::Error> {
                     }
                 }
             } => {}
-            _ = tokio::signal::ctrl_c() => {
-                eprintln!("\nCtrl-C received, shutting down\n");
+            _ = ct.cancelled() => {
                 break;
             }
         }
@@ -120,6 +226,5 @@ pub(crate) async fn run() -> Result<(), anyhow::Error> {
     for device in devices.iter_mut() {
         device.deinitialize(server_addr, &token_pid).await;
     }
-    tokio::fs::write(LOGIN_CACHE_PATH, serde_json::to_string(&login_res)?).await?;
     Ok(())
 }

@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+use chrono::{DateTime, Utc};
 use reqwest::header::CONTENT_TYPE;
 use serde::{Deserialize, Serialize};
 
@@ -113,6 +114,27 @@ pub struct PoltysLoginRes {
     pub address: String,
     #[serde(rename = "ServerGUID")]
     pub server_guid: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Default)]
+pub struct PoltysLoginCache {
+    pub token: String,
+    pub address: String,
+    pub time: DateTime<Utc>,
+    pub refresh_token: String,
+    pub global_token: String,
+}
+
+impl PoltysLoginCache {
+    pub fn new(conn_res: PoltysConnectRes, login_res: PoltysLoginRes) -> Self {
+        Self {
+            refresh_token: conn_res.token,
+            global_token: conn_res.token_global,
+            token: login_res.token,
+            address: login_res.address,
+            time: Utc::now(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

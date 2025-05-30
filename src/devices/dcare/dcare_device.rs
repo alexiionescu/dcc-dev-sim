@@ -12,7 +12,7 @@ use super::web_data::*;
 pub struct DCareDevice {
     pub socket: tokio::net::UdpSocket,
     pub http_client: reqwest::Client,
-    pub pin: u64,
+    pub pin: usize,
     pub line_id: u64,
     pub line_name: Option<String>,
     pub db_id: u64,
@@ -28,7 +28,7 @@ pub struct DCareDevice {
 }
 
 impl DCareDevice {
-    pub async fn new(server_addr: &str, pin: u64) -> Result<Self, anyhow::Error> {
+    pub async fn new(server_addr: &str, pin: usize) -> Result<Self, anyhow::Error> {
         let socket = tokio::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
         socket.connect(server_addr).await?;
         let http_client = reqwest::Client::builder()
@@ -77,12 +77,12 @@ impl DCareDevice {
     }
 
     #[inline]
-    fn get_device_id(pin: u64) -> String {
+    fn get_device_id(pin: usize) -> String {
         format!("__SIM_DCARE_{:03}", pin)
     }
 
     #[inline]
-    fn get_device_name(pin: u64) -> String {
+    fn get_device_name(pin: usize) -> String {
         format!("DcareEX Sim {:03}", pin)
     }
 
@@ -97,7 +97,7 @@ impl DCareDevice {
     }
 
     #[inline]
-    fn get_udp_ka_ack(pin: u64) -> String {
+    fn get_udp_ka_ack(pin: usize) -> String {
         json!({
             "Type": "Ack",
             "DeviceId": Self::get_device_id(pin),

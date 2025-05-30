@@ -14,7 +14,7 @@ pub(crate) struct Args {
     #[clap(long, help = "server SSL address override")]
     server_addr: Option<String>,
     #[clap(short = 'C', long, help = "count to simulate", default_value = "1")]
-    count: u64,
+    count: usize,
     #[clap(short = 'U', long, help = "user name for authentication")]
     user: String,
     #[clap(short = 'P', long, help = "password for authentication")]
@@ -24,7 +24,9 @@ pub(crate) struct Args {
         long,
         help = "base device id (pin for DCare, mac address for CH, etc.)"
     )]
-    dev_id_base: u64,
+    dev_id_base: usize,
+    #[clap(short = 'j', help = "number of parallel jobs", default_value = "1")]
+    concurrent_jobs: usize,
 }
 
 mod devices;
