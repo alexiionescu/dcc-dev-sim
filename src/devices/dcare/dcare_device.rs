@@ -300,22 +300,27 @@ impl DCareDevice {
                     .get("Tag")
                     .and_then(|v| v.as_u64())
                     .unwrap_or_default();
+                let not_deleted = json_val
+                    .get("Delete")
+                    .and_then(|v| v.as_bool())
+                    .is_some_and(|b| !b);
+
                 if let Some(body) = json_val.get("Body").and_then(|v| v.as_str()) {
                     log!(
                         3,
-                        "[DCare_{:03}] Activity Notify received: {title} : {body}",
+                        "[DCare_{:03}] Activity Notify: {title} [{body}]",
                         self.pin
                     );
-                } else if tag > 0 && !self.active_ids.contains(&tag) {
+                } else if not_deleted && tag > 0 && !self.active_ids.contains(&tag) {
                     log!(
                         3,
-                        "[DCare_{:03}] New Alarm DisplayNotify received: {title}",
+                        "[DCare_{:03}] New Alarm DisplayNotify:  {title}",
                         self.pin
                     );
                 } else {
                     log!(
                         4,
-                        "[DCare_{:03}] Activity Notify received: {title} : Tag:{tag}",
+                        "[DCare_{:03}] Activity Notify: {title} Tag:{tag} Active:{not_deleted}",
                         self.pin
                     );
                 }
