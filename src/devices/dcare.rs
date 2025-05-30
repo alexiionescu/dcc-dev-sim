@@ -171,10 +171,8 @@ async fn run_dev_range(
     }
     let c_interval = std::time::Duration::from_millis(500);
     let mut check_timer = tokio::time::interval_at(Instant::now() + c_interval, c_interval);
-    let c_interval_10m = std::time::Duration::from_secs(600);
-    let mut check_timer_10m =
-        tokio::time::interval_at(Instant::now() + c_interval_10m, c_interval_10m);
     let mut data = vec![0u8; MAX_DATAGRAM_SIZE];
+    let mut server_restarted = false;
     loop {
         tokio::select! {
             _ = watcher_rx.changed() => {
@@ -185,20 +183,29 @@ async fn run_dev_range(
                     token_pid = format!("&token={token}&pid={pid}");
                 }
             }
-            _ = check_timer_10m.tick() => {
-                if let Ok(new_pid) = web_login::get_pid(server_addr, &token).await {
-                    if new_pid != pid {
-                        pid = new_pid;
-                        log!(1, "[Th:{thread_id:?}] PID changed from {} to {}, updating token_pid", pid, new_pid);
-                        token_pid = format!("&token={token}&pid={pid}");
+            _ = check_timer.tick() => {
+                if !server_restarted {
+                    for device in devices.iter_mut() {
+                        if let Err(e) =  device.check_interval(server_addr, &token_pid).await {
+                            log!(1, "[DCare_{:03}] Error during check_interval: {}", device.pin, e);
+                            if e.to_string().contains("ERR_BAD_PROCESS_ID") {
+                                log!(1, "[Th:{thread_id:?}] PID changed from {} to {}, updating token_pid", pid, device.new_pid);
+                                pid = device.new_pid;
+                                token_pid = format!("&token={token}&pid={pid}");
+                                server_restarted = true;
+                                break;
+                            }
+                        }
                     }
                 }
-            }
-            _ = check_timer.tick() => {
-                for device in devices.iter_mut() {
-                    if let Err(e) =  device.check_interval(server_addr, &token_pid).await {
-                        log!(1, "[DCare_{:03}] Error during check_interval: {}", device.pin, e);
+                if server_restarted {
+                    log!(1, "[Th:{thread_id:?}] Server restarted, reinitialize devices");
+                    for device in devices.iter_mut() {
+                        if let Err(e) = device.initialize(server_addr, &token_pid).await {
+                            log!(1, "[DCare_{:03}] Error during reinitialization: {}", device.pin, e);
+                        }
                     }
+                    server_restarted = false;
                 }
             }
             _ = async {
@@ -208,11 +215,17 @@ async fn run_dev_range(
                             if size > 0 {
                                 if let Err(e) = device.process_recv_udp(server_addr, &token_pid, &data[..size]).await {
                                     log!(1, "[DCare_{:03}] Error processing udp data: {}", device.pin, e);
+                                    if e.to_string().contains("ERR_BAD_PROCESS_ID") {
+                                        log!(1, "[Th:{thread_id:?}] PID changed from {} to {}, updating token_pid", pid, device.new_pid);
+                                        pid = device.new_pid;
+                                        token_pid = format!("&token={token}&pid={pid}");
+                                        server_restarted = true;
+                                    }
                                 }
                             }
                         }
                         Err(e) => {
-                            log!(1, "Error receiving udp data: {}", e);
+                            log!(1, "[DCare_{:03}] Error receive udp data: {}", device.pin, e);
                         }
                     }
                 }

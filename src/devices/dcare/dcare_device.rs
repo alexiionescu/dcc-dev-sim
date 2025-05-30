@@ -25,6 +25,8 @@ pub struct DCareDevice {
     pub need_refresh: bool,
     pub last_refresh_time: Option<Instant>,
     pub connected_alarms: AHashSet<i64>,
+    pub active_ids: AHashSet<u64>,
+    pub new_pid: u32,
 }
 
 impl DCareDevice {
@@ -51,6 +53,8 @@ impl DCareDevice {
             need_refresh: true,
             last_refresh_time: None,
             connected_alarms: AHashSet::new(),
+            active_ids: AHashSet::new(),
+            new_pid: 0,
         })
     }
 
@@ -292,16 +296,26 @@ impl DCareDevice {
                     .get("Title")
                     .and_then(|v| v.as_str())
                     .unwrap_or_default();
+                let tag = json_val
+                    .get("Tag")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or_default();
                 if let Some(body) = json_val.get("Body").and_then(|v| v.as_str()) {
                     log!(
                         3,
                         "[DCare_{:03}] Activity Notify received: {title} : {body}",
                         self.pin
                     );
+                } else if tag > 0 && !self.active_ids.contains(&tag) {
+                    log!(
+                        3,
+                        "[DCare_{:03}] New Alarm DisplayNotify received: {title}",
+                        self.pin
+                    );
                 } else {
                     log!(
                         4,
-                        "[DCare_{:03}] Activity Notify received: {title}",
+                        "[DCare_{:03}] Activity Notify received: {title} : Tag:{tag}",
                         self.pin
                     );
                 }
@@ -718,7 +732,7 @@ impl DCareDevice {
     }
 
     async fn request_bulk_connect_alarm_state_changed(
-        &self,
+        &mut self,
         server_addr: &str,
         token_pid: &str,
         alarm_obj_ref: i64,
@@ -735,9 +749,14 @@ impl DCareDevice {
             )
             .await?;
         match response {
-            PoltysResponse::Err(poltys_response_error) => Err(anyhow::anyhow!(
-                "BulkConnect Alarm {alarm_obj_ref} failed: {poltys_response_error}"
-            )),
+            PoltysResponse::Err(poltys_response_error) => {
+                if poltys_response_error.error == "ERR_BAD_PROCESS_ID" {
+                    self.new_pid = poltys_response_error.code;
+                }
+                Err(anyhow::anyhow!(
+                    "BulkConnect Alarm {alarm_obj_ref} failed: {poltys_response_error}"
+                ))
+            }
             PoltysResponse::Other(o) => {
                 log!(
                     4,
@@ -774,7 +793,22 @@ impl DCareDevice {
                 "BulkConnect failed: {poltys_response_error}"
             )),
             PoltysResponse::Other(o) => {
-                log!(4, "[DCare_{:03}] BulkConnect OK -> {o}", self.pin);
+                if o.as_array().is_none_or(|arr| arr.is_empty()) {
+                    log!(1, "[DCare_{:03}] BulkConnect OK but no notifiers", self.pin);
+                } else if o
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .contains(&serde_json::Value::Number(0.into()))
+                {
+                    log!(
+                        1,
+                        "[DCare_{:03}] BulkConnect OK but 0 notifiers received",
+                        self.pin
+                    );
+                } else {
+                    log!(4, "[DCare_{:03}] BulkConnect OK -> {o}", self.pin);
+                }
                 Ok(())
             }
             _ => Err(anyhow::anyhow!(
@@ -841,8 +875,9 @@ impl DCareDevice {
         })
     }
 
-    fn create_request_get_chats_body(alarm_ids: &[u64]) -> serde_json::Value {
-        let a_cond: String = alarm_ids
+    fn create_request_get_chats_body(&self) -> serde_json::Value {
+        let a_cond: String = self
+            .active_ids
             .iter()
             .map(|aid| {
                 format!(
@@ -863,17 +898,25 @@ impl DCareDevice {
     }
 
     async fn request_refresh_alarm_list(
-        &self,
+        &mut self,
         server_addr: &str,
         token_pid: &str,
     ) -> Result<(), anyhow::Error> {
-        let video_sources = self.post_request::<serde_json::Value>(
+        let video_sources: PoltysResponse = self.post_request(
             server_addr,
             token_pid,
             ObjTypeOrRef::Type("Devices::Endpoints"), 
             "ListBySkill", 
             r#"{"SkillType":"LOCATION","Condition":"EndpointTypes.Name = 'VideoSource'","Skill":{"ancestorOrigins":{},"href":"https://localhost/menu/activealarms","origin":"https://localhost","protocol":"https:","host":"localhost","hostname":"localhost","port":"","pathname":"/menu/activealarms","search":"","hash":""}}"#.to_string()
         ).await?;
+        if let PoltysResponse::Err(poltys_response_error) = &video_sources {
+            if poltys_response_error.error == "ERR_BAD_PROCESS_ID" {
+                self.new_pid = poltys_response_error.code;
+            }
+            return Err(anyhow::anyhow!(
+                "ListBySkill VideoSource failed: {poltys_response_error}"
+            ));
+        }
         log!(
             4,
             "[DCare_{:03}] AlarmRefresh: ListBySkill Video OK -> {video_sources}",
@@ -888,34 +931,37 @@ impl DCareDevice {
                 r#"{"AcceptedByMe":true,"WithEvents":true}"#.to_string(),
             )
             .await?;
-        let alarm_ids: Vec<_> = alarm_list
-            .as_array()
-            .map(|alarms| {
-                alarms
-                    .iter()
-                    .filter_map(|alarm| {
-                        alarm
-                            .get("Routing::Activity")
-                            .and_then(|v| v.get("Id"))
-                            .and_then(|v| v.as_u64())
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        self.active_ids = AHashSet::from_iter(
+            alarm_list
+                .as_array()
+                .map(|alarms| {
+                    alarms
+                        .iter()
+                        .filter_map(|alarm| {
+                            alarm
+                                .get("Routing::Activity")
+                                .and_then(|v| v.get("Id"))
+                                .and_then(|v| v.as_u64())
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
+        );
         log!(
             4,
-            "[DCare_{:03}] AlarmRefresh: ActiveAlarmList OK -> {alarm_ids:?}",
-            self.pin
+            "[DCare_{:03}] AlarmRefresh: ActiveAlarmList OK -> {:?}",
+            self.pin,
+            self.active_ids
         );
 
-        if !alarm_ids.is_empty() {
+        if !self.active_ids.is_empty() {
             let active_chats = self
                 .post_request::<serde_json::Value>(
                     server_addr,
                     token_pid,
                     ObjTypeOrRef::Type("Routing::Activities"),
                     "List",
-                    Self::create_request_get_chats_body(&alarm_ids).to_string(),
+                    self.create_request_get_chats_body().to_string(),
                 )
                 .await?;
             log!(
@@ -931,7 +977,7 @@ impl DCareDevice {
                     "ActiveAlarmListDetails",
                     format!(
                         r#"{{"Condition": "AActivities.Id IN ({})"}}"#,
-                        alarm_ids.iter().map(|id| id.to_string()).join(", ")
+                        self.active_ids.iter().map(|id| id.to_string()).join(", ")
                     ),
                 )
                 .await?;

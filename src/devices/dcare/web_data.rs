@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use chrono::{DateTime, Utc};
 use reqwest::header::CONTENT_TYPE;
 use serde::{Deserialize, Serialize};
@@ -33,6 +32,19 @@ pub enum PoltysResponse {
     GetPid(ProcessInfo),
     Other(serde_json::Value),
 }
+
+impl std::fmt::Display for PoltysResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PoltysResponse::Err(e) => write!(f, "{}", e),
+            PoltysResponse::Connect(c) => write!(f, "Connect: {:?}", c),
+            PoltysResponse::Login(l) => write!(f, "Login: {:?}", l),
+            PoltysResponse::GetPid(p) => write!(f, "GetPid: {:?}", p),
+            PoltysResponse::Other(v) => write!(f, "Other: {}", v),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct ResponsePartData {
@@ -82,6 +94,7 @@ impl std::fmt::Display for PoltysResponseError {
 
 impl std::error::Error for PoltysResponseError {}
 
+#[allow(unused)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct LicenseData {
@@ -97,6 +110,7 @@ pub struct License {
     pub data: LicenseData,
 }
 
+#[allow(unused)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct PoltysConnectRes {
