@@ -322,7 +322,7 @@ impl DCareDevice {
                     if log {
                         log!(
                             3,
-                            "[DCare_{:03}] New Alarm DisplayNotify: {title} Tag:{tag}",
+                            "[DCare_{:03}] Alarm Add:{not_deleted} DisplayNotify: {title} Tag:{tag}",
                             self.pin
                         );
                     }

@@ -122,8 +122,9 @@ impl CHDevice {
     }
     pub async fn deinitialize(&mut self) {
         // No specific deinitialization for CHDevice
+        let no_ack = self.waited_ack.len();
         log!(
-            3,
+            if no_ack > 0 { 3 } else { 4 },
             "[CH_{:03}] Device deinitialized. Unreceived ACK:{}",
             self.pin,
             self.waited_ack.len()
@@ -136,12 +137,17 @@ impl CHDevice {
             self.has_alarm = 1;
             let pin_cmd = self.get_send_pin(PIN_CALL_CORD, None, None, None);
             self.socket.send(pin_cmd.to_string().as_bytes()).await?;
-            log!(3, "[CH_{:03}] Sending Primary Call Cord Alarm", self.pin);
+            log!(
+                3,
+                "[CH_{:03}] Sending Primary Call Cord Alarm {}",
+                self.pin,
+                self.seq
+            );
         } else if self.has_alarm == 5 {
             self.has_alarm = 0;
             let pin_cmd = self.get_send_pin(PIN_RESET, None, None, None);
             self.socket.send(pin_cmd.to_string().as_bytes()).await?;
-            log!(3, "[CH_{:03}] Sending Reset", self.pin);
+            log!(3, "[CH_{:03}] Sending Reset {}", self.pin, self.seq);
         } else {
             log!(4, "[CH_{:03}] Sending KeepAlive", self.pin);
             if self.has_alarm > 0 {
