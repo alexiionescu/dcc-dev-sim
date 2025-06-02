@@ -38,23 +38,21 @@ enum ArgsCommand {
     #[clap(name = "dcare", about = "Run DCare device simulation")]
     DCare {},
     #[clap(about = "Run Comm Hub device simulation")]
-    CommHub {
-        #[clap(short = 'p', long, help = "port number", default_value = "19398")]
-        port: u16,
-    },
+    CommHub {},
 }
 
 mod utils;
 
 static ARGS: Lazy<Args> = Lazy::new(Args::parse);
+
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     match ARGS.cmd {
         ArgsCommand::DCare {} => {
             dcare::run().await?;
         }
-        ArgsCommand::CommHub { port } => {
-            comm_hub::run(port).await?;
+        ArgsCommand::CommHub {} => {
+            comm_hub::run().await?;
         }
     }
     Ok(())
