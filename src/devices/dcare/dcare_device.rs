@@ -26,6 +26,7 @@ pub struct DCareDevice {
     pub last_refresh_time: Option<Instant>,
     pub connected_alarms: AHashSet<i64>,
     pub active_ids: AHashSet<u64>,
+    pub active_tags: AHashSet<u64>,
     pub new_pid: u32,
 }
 
@@ -54,6 +55,7 @@ impl DCareDevice {
             last_refresh_time: None,
             connected_alarms: AHashSet::new(),
             active_ids: AHashSet::new(),
+            active_tags: AHashSet::new(),
             new_pid: 0,
         })
     }
@@ -311,12 +313,19 @@ impl DCareDevice {
                         "[DCare_{:03}] Activity Notify: {title} [{body}]",
                         self.pin
                     );
-                } else if not_deleted && tag > 0 && !self.active_ids.contains(&tag) {
-                    log!(
-                        3,
-                        "[DCare_{:03}] New Alarm DisplayNotify:  {title}",
-                        self.pin
-                    );
+                } else if tag > 0 {
+                    let log = if not_deleted {
+                        self.active_tags.insert(tag)
+                    } else {
+                        self.active_tags.remove(&tag)
+                    };
+                    if log {
+                        log!(
+                            3,
+                            "[DCare_{:03}] New Alarm DisplayNotify: {title} Tag:{tag}",
+                            self.pin
+                        );
+                    }
                 } else {
                     log!(
                         4,
