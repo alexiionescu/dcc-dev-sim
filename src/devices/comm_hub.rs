@@ -71,6 +71,9 @@ async fn run_dev_range(
     const MAX_DATAGRAM_SIZE: usize = 65_507;
     let thread_id = std::thread::current().id();
 
+    if r.start > 0 {
+        tokio::time::sleep(Duration::from_millis(200 * r.start as u64)).await;
+    }
     log!(1, "[Th:{thread_id:?}] STARTED {r:?}");
 
     let mut devices = Vec::with_capacity(r.len());

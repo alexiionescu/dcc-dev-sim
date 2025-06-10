@@ -137,8 +137,12 @@ async fn run_dev_range(
     const MAX_DATAGRAM_SIZE: usize = 65_507;
     let thread_id = std::thread::current().id();
 
+    if r.start > 0 {
+        tokio::time::sleep(Duration::from_millis(200 * r.start as u64)).await;
+    }
+    log!(1, "[Th:{thread_id:?}] STARTED {r:?}");
+
     let mut pid = web_login::get_pid(server_addr, &token).await?;
-    log!(1, "[Th:{thread_id:?}] GetPid OK {pid} for {r:?}");
 
     let args = &(*crate::ARGS);
     let mut devices = Vec::with_capacity(r.len());
@@ -175,37 +179,17 @@ async fn run_dev_range(
     let mut server_restarted = false;
     loop {
         tokio::select! {
+            biased;
+
+            _ = ct.cancelled() => {
+                break;
+            }
             _ = watcher_rx.changed() => {
                 let mut watch_data = watcher_rx.borrow_and_update().clone();
                 if let Some(new_token) = watch_data.token.take() {
                     token = new_token;
                     log!(3, "[Th:{thread_id:?}] New Token received, updating token_pid");
                     token_pid = format!("&token={token}&pid={pid}");
-                }
-            }
-            _ = check_timer.tick() => {
-                if !server_restarted {
-                    for device in devices.iter_mut() {
-                        if let Err(e) =  device.check_interval(server_addr, &token_pid).await {
-                            log!(1, "[DCare_{:03}] Error during check_interval: {}", device.pin, e);
-                            if e.to_string().contains("ERR_BAD_PROCESS_ID") {
-                                log!(1, "[Th:{thread_id:?}] PID changed from {} to {}, updating token_pid", pid, device.new_pid);
-                                pid = device.new_pid;
-                                token_pid = format!("&token={token}&pid={pid}");
-                                server_restarted = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-                if server_restarted {
-                    log!(1, "[Th:{thread_id:?}] Server restarted, reinitialize devices");
-                    for device in devices.iter_mut() {
-                        if let Err(e) = device.initialize(server_addr, &token_pid).await {
-                            log!(1, "[DCare_{:03}] Error during reinitialization: {}", device.pin, e);
-                        }
-                    }
-                    server_restarted = false;
                 }
             }
             _ = async {
@@ -230,8 +214,30 @@ async fn run_dev_range(
                     }
                 }
             } => {}
-            _ = ct.cancelled() => {
-                break;
+            _ = check_timer.tick() => {
+                if !server_restarted {
+                    for device in devices.iter_mut() {
+                        if let Err(e) =  device.check_interval(server_addr, &token_pid).await {
+                            log!(1, "[DCare_{:03}] Error during check_interval: {}", device.pin, e);
+                            if e.to_string().contains("ERR_BAD_PROCESS_ID") {
+                                log!(1, "[Th:{thread_id:?}] PID changed from {} to {}, updating token_pid", pid, device.new_pid);
+                                pid = device.new_pid;
+                                token_pid = format!("&token={token}&pid={pid}");
+                                server_restarted = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if server_restarted {
+                    log!(1, "[Th:{thread_id:?}] Server restarted, reinitialize devices");
+                    for device in devices.iter_mut() {
+                        if let Err(e) = device.initialize(server_addr, &token_pid).await {
+                            log!(1, "[DCare_{:03}] Error during reinitialization: {}", device.pin, e);
+                        }
+                    }
+                    server_restarted = false;
+                }
             }
         }
     }
