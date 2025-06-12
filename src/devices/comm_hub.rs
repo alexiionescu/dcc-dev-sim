@@ -8,6 +8,8 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 mod comm_hub_device;
 
+const DELAY: u64 = 100; // milliseconds init/deinit delay between spawning tasks
+
 pub(crate) async fn run() -> Result<(), anyhow::Error> {
     let args = &(*crate::ARGS);
     let server_addr = args
@@ -45,7 +47,12 @@ pub(crate) async fn run() -> Result<(), anyhow::Error> {
         }
     }
     ct.cancel();
-    if let Err(err) = timeout(Duration::from_secs(10), set.join_all()).await {
+    if let Err(err) = timeout(
+        Duration::from_secs(5 + DELAY * args.count as u64),
+        set.join_all(),
+    )
+    .await
+    {
         log!(
             0,
             "Timeout while waiting for all tasks to finish gracefully: {}",
@@ -71,8 +78,9 @@ async fn run_dev_range(
     const MAX_DATAGRAM_SIZE: usize = 65_507;
     let thread_id = std::thread::current().id();
 
-    if r.start > 0 {
-        tokio::time::sleep(Duration::from_millis(200 * r.start as u64)).await;
+    let delay = tokio::time::Duration::from_millis(DELAY * r.start as u64);
+    if !delay.is_zero() {
+        tokio::time::sleep(delay).await;
     }
     log!(1, "[Th:{thread_id:?}] STARTED {r:?}");
 
@@ -139,6 +147,9 @@ async fn run_dev_range(
         }
     }
 
+    if !delay.is_zero() {
+        tokio::time::sleep(delay).await;
+    }
     for device in devices.iter_mut() {
         device.deinitialize().await;
     }
