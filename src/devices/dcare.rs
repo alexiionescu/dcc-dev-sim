@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use super::utils::web_data::PoltysLoginCache;
 use chrono::Utc;
 use tokio::{
     sync::watch,
@@ -7,14 +8,14 @@ use tokio::{
     time::{Instant, timeout},
 };
 use tokio_util::sync::CancellationToken;
-use web_data::PoltysLoginCache;
 
-use crate::log;
+use crate::{
+    devices::utils::web_login::{get_pid, login, poltys_connect, renew_token},
+    log,
+};
 
 mod dcare_device;
-pub(crate) mod web_data;
 
-mod web_login;
 use dcare_device::DCareDevice;
 const DATA_FOLDER: &str = "data";
 const LOGIN_CACHE_FILENAME: &str = "login_cache.json";
@@ -40,8 +41,8 @@ pub(crate) async fn run() -> Result<(), anyhow::Error> {
         .as_ref()
         .is_none_or(|c| Utc::now().signed_duration_since(c.time).num_days() > 1)
     {
-        let conn_res = web_login::poltys_connect(&args.admin, &args.user, &args.password).await?;
-        let login_res = web_login::login(&args.admin, &conn_res, &args.server).await?;
+        let conn_res = poltys_connect(&args.admin, &args.user, &args.password).await?;
+        let login_res = login(&args.admin, &conn_res, &args.server).await?;
         login_cache = Some(PoltysLoginCache::new(conn_res, login_res));
         log!(
             0,
@@ -88,7 +89,7 @@ pub(crate) async fn run() -> Result<(), anyhow::Error> {
                 }
             }
             _ = check_timer_daily.tick() => {
-                login_cache = Some(web_login::renew_token(&args.admin, login_cache.take().unwrap()).await);
+                login_cache = Some(renew_token(&args.admin, login_cache.take().unwrap()).await);
                 watcher_tx.send_if_modified(|data| {
                     if data.token.as_deref() != login_cache.as_ref().map(|c| c.token.as_str()) {
                         log!(3, "[Login] Token changed. Sending to all tasks");
@@ -149,7 +150,7 @@ async fn run_dev_range(
     }
     log!(1, "[Th:{thread_id:?}] STARTED {r:?}");
 
-    let mut pid = web_login::get_pid(server_addr, &token).await?;
+    let mut pid = get_pid(server_addr, &token).await?;
 
     let args = &(*crate::ARGS);
     let mut devices = Vec::with_capacity(r.len());

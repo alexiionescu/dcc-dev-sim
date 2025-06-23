@@ -7,7 +7,7 @@ use serde_json::json;
 use std::net::Ipv4Addr;
 use tokio::time::{Instant, sleep};
 
-use super::web_data::*;
+use crate::devices::utils::web_data::*;
 
 pub struct DCareDevice {
     pub socket: tokio::net::UdpSocket,
@@ -172,7 +172,7 @@ impl DCareDevice {
         {
             let instant = Instant::now();
             self.need_refresh = false;
-            self.last_refresh_time = Some(Instant::now());
+            self.last_refresh_time = Some(instant);
             self.request_refresh_alarm_list(server_addr, token_pid)
                 .await?;
             let elapsed = instant.elapsed().as_millis();

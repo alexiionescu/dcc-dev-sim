@@ -39,6 +39,8 @@ enum ArgsCommand {
     DCare {},
     #[clap(about = "Run Comm Hub device simulation")]
     CommHub {},
+    #[clap(about = "Run Web GUI browser simulation")]
+    WebGui {},
 }
 
 mod utils;
@@ -53,6 +55,9 @@ async fn main() -> Result<(), anyhow::Error> {
         }
         ArgsCommand::CommHub {} => {
             comm_hub::run().await?;
+        }
+        ArgsCommand::WebGui {} => {
+            web_gui::run().await?;
         }
     }
     Ok(())
