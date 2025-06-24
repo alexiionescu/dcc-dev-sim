@@ -89,7 +89,6 @@ pub(crate) async fn run() -> Result<(), anyhow::Error> {
     }
     let c_interval = std::time::Duration::from_millis(500);
     let mut check_timer = tokio::time::interval_at(Instant::now() + c_interval, c_interval);
-    let mut server_restarted = false;
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -107,7 +106,6 @@ pub(crate) async fn run() -> Result<(), anyhow::Error> {
                                         log!(1, "PID changed from {} to {}, updating token_pid", pid, device.new_pid);
                                         pid = device.new_pid;
                                         token_pid = format!("&token={token}&pid={pid}");
-                                        server_restarted = true;
                                     }
                                 }
                             }
@@ -120,28 +118,15 @@ pub(crate) async fn run() -> Result<(), anyhow::Error> {
                 }
             } => {}
             _ = check_timer.tick() => {
-                if !server_restarted {
-                    for device in devices.iter_mut() {
-                        if let Err(e) =  device.check_interval(&server_addr, &token_pid).await {
-                            log!(1, "[Web_{:03}] Error during check_interval: {}", device.pin, e);
-                            if e.to_string().contains("ERR_BAD_PROCESS_ID") {
-                                log!(1, "PID changed from {} to {}, updating token_pid", pid, device.new_pid);
-                                pid = device.new_pid;
-                                token_pid = format!("&token={token}&pid={pid}");
-                                server_restarted = true;
-                                break;
-                            }
+                for device in devices.iter_mut() {
+                    if let Err(e) =  device.check_interval(&server_addr, &token_pid).await {
+                        log!(1, "[Web_{:03}] Error during check_interval: {}", device.pin, e);
+                        if e.to_string().contains("ERR_BAD_PROCESS_ID") {
+                            log!(1, "PID changed from {} to {}, updating token_pid", pid, device.new_pid);
+                            pid = device.new_pid;
+                            token_pid = format!("&token={token}&pid={pid}");
                         }
                     }
-                }
-                if server_restarted {
-                    log!(1, "Server restarted, reinitialize devices");
-                    for device in devices.iter_mut() {
-                        if let Err(e) = device.initialize(&server_addr).await {
-                            log!(1, "[Web_{:03}] Error during reinitialization: {}", device.pin, e);
-                        }
-                    }
-                    server_restarted = false;
                 }
             }
             _ = check_timer_daily.tick() => {
