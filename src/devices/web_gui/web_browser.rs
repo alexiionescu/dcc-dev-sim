@@ -285,7 +285,9 @@ impl WebClient {
             )
             .await?;
         if let PoltysResponse::Err(poltys_response_error) = &res {
-            if poltys_response_error.error == "ERR_BAD_PROCESS_ID" {
+            if poltys_response_error.error == "ERR_BAD_PROCESS_ID"
+                || poltys_response_error.error == "ERR_CLIENT_NOT_READY"
+            {
                 self.new_pid = poltys_response_error.code;
             }
             return Err(anyhow::anyhow!(

@@ -102,7 +102,7 @@ pub(crate) async fn run() -> Result<(), anyhow::Error> {
                             Ok(msg) => {
                                 if let Err(e) = device.process_ws_msg(&server_addr, &token_pid, msg).await {
                                     log!(1, "[Web_{:03}] Error processing websocket data: {}", device.pin, e);
-                                    if e.to_string().contains("ERR_BAD_PROCESS_ID") {
+                                    if device.new_pid > 0 && pid != device.new_pid {
                                         log!(1, "PID changed from {} to {}, updating token_pid", pid, device.new_pid);
                                         pid = device.new_pid;
                                         token_pid = format!("&token={token}&pid={pid}");
@@ -121,7 +121,7 @@ pub(crate) async fn run() -> Result<(), anyhow::Error> {
                 for device in devices.iter_mut() {
                     if let Err(e) =  device.check_interval(&server_addr, &token_pid).await {
                         log!(1, "[Web_{:03}] Error during check_interval: {}", device.pin, e);
-                        if e.to_string().contains("ERR_BAD_PROCESS_ID") {
+                        if device.new_pid > 0 && pid != device.new_pid {
                             log!(1, "PID changed from {} to {}, updating token_pid", pid, device.new_pid);
                             pid = device.new_pid;
                             token_pid = format!("&token={token}&pid={pid}");
