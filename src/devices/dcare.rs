@@ -148,7 +148,7 @@ async fn run_dev_range(
     if !delay.is_zero() {
         tokio::time::sleep(delay).await;
     }
-    log!(1, "[Th:{thread_id:?}] STARTED {r:?}");
+    log!(1, "[{thread_id:?}] STARTED {r:?}");
 
     let mut pid = get_pid(server_addr, &token).await?;
 
@@ -196,7 +196,7 @@ async fn run_dev_range(
                 let mut watch_data = watcher_rx.borrow_and_update().clone();
                 if let Some(new_token) = watch_data.token.take() {
                     token = new_token;
-                    log!(3, "[Th:{thread_id:?}] New Token received, updating token_pid");
+                    log!(3, "[{thread_id:?}] New Token received, updating token_pid");
                     token_pid = format!("&token={token}&pid={pid}");
                 }
             }
@@ -208,7 +208,7 @@ async fn run_dev_range(
                                 if let Err(e) = device.process_recv_udp(server_addr, &token_pid, &data[..size]).await {
                                     log!(1, "[DCare_{:03}] Error processing udp data: {}", device.pin, e);
                                     if e.to_string().contains("ERR_BAD_PROCESS_ID") {
-                                        log!(1, "[Th:{thread_id:?}] PID changed from {} to {}, updating token_pid", pid, device.new_pid);
+                                        log!(1, "[{thread_id:?}] PID changed from {} to {}, updating token_pid", pid, device.new_pid);
                                         pid = device.new_pid;
                                         token_pid = format!("&token={token}&pid={pid}");
                                         server_restarted = true;
@@ -228,7 +228,7 @@ async fn run_dev_range(
                         if let Err(e) =  device.check_interval(server_addr, &token_pid).await {
                             log!(1, "[DCare_{:03}] Error during check_interval: {}", device.pin, e);
                             if e.to_string().contains("ERR_BAD_PROCESS_ID") {
-                                log!(1, "[Th:{thread_id:?}] PID changed from {} to {}, updating token_pid", pid, device.new_pid);
+                                log!(1, "[{thread_id:?}] PID changed from {} to {}, updating token_pid", pid, device.new_pid);
                                 pid = device.new_pid;
                                 token_pid = format!("&token={token}&pid={pid}");
                                 server_restarted = true;
@@ -238,7 +238,7 @@ async fn run_dev_range(
                     }
                 }
                 if server_restarted {
-                    log!(1, "[Th:{thread_id:?}] Server restarted, reinitialize devices");
+                    log!(1, "[{thread_id:?}] Server restarted, reinitialize devices");
                     for device in devices.iter_mut() {
                         if let Err(e) = device.initialize(server_addr, &token_pid).await {
                             log!(1, "[DCare_{:03}] Error during reinitialization: {}", device.pin, e);

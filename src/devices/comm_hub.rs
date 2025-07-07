@@ -82,12 +82,13 @@ async fn run_dev_range(
     if !delay.is_zero() {
         tokio::time::sleep(delay).await;
     }
-    log!(1, "[Th:{thread_id:?}] STARTED {r:?}");
+    log!(1, "[{thread_id:?}] STARTED {r:?}");
 
     let mut devices = Vec::with_capacity(r.len());
     let tstamp = Instant::now();
     for idx in r {
         let pin = args.dev_id_base + idx;
+        log!(5, "[{thread_id:?}] Try initializing [CH_{pin:03}]");
         if let Ok(mut device) = CHDevice::new(server_addr, pin).await {
             match device.initialize().await {
                 Ok(_) => {
@@ -104,7 +105,7 @@ async fn run_dev_range(
     }
     log!(
         0,
-        "*** {} DCare devices runnning. Init Duration {} ms  ***",
+        "*** {} CommHub devices running. Init Duration {} ms  ***",
         devices.len(),
         tstamp.elapsed().as_millis()
     );
