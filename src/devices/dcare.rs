@@ -29,9 +29,14 @@ struct WatchData {
 
 pub(crate) async fn run() -> Result<(), anyhow::Error> {
     let args = &(*crate::ARGS);
+    let login_cache_path = args
+        .login_cache
+        .as_ref()
+        .map(|s| s.as_ref())
+        .unwrap_or(LOGIN_CACHE_PATH);
 
     tokio::fs::create_dir_all(DATA_FOLDER).await?;
-    let mut login_cache = tokio::fs::read(LOGIN_CACHE_PATH)
+    let mut login_cache = tokio::fs::read(login_cache_path)
         .await
         .map(|data| serde_json::from_slice::<PoltysLoginCache>(&data).ok())
         .ok()

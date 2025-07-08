@@ -13,6 +13,8 @@ pub(crate) struct Args {
     server: String,
     #[clap(long, help = "server SSL address override")]
     server_addr: Option<String>,
+    #[clap(long, help = "login cache path (default: data/login_cache.json")]
+    login_cache: Option<String>,
     #[clap(short = 'C', long, help = "count to simulate", default_value = "1")]
     count: usize,
     #[clap(short = 'U', long, help = "user name for authentication")]
