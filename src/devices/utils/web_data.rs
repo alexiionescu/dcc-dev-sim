@@ -36,11 +36,11 @@ pub enum PoltysResponse {
 impl std::fmt::Display for PoltysResponse {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PoltysResponse::Err(e) => write!(f, "{}", e),
-            PoltysResponse::Connect(c) => write!(f, "Connect: {:?}", c),
-            PoltysResponse::Login(l) => write!(f, "Login: {:?}", l),
-            PoltysResponse::GetPid(p) => write!(f, "GetPid: {:?}", p),
-            PoltysResponse::Other(v) => write!(f, "Other: {}", v),
+            PoltysResponse::Err(e) => write!(f, "{e}"),
+            PoltysResponse::Connect(c) => write!(f, "Connect: {c:?}"),
+            PoltysResponse::Login(l) => write!(f, "Login: {l:?}"),
+            PoltysResponse::GetPid(p) => write!(f, "GetPid: {p:?}"),
+            PoltysResponse::Other(v) => write!(f, "Other: {v}"),
         }
     }
 }
@@ -88,7 +88,7 @@ impl std::fmt::Display for PoltysResponseError {
             .map(|p| p.part.message_id.as_str())
             .collect();
         let parts_str = parts.join(", ");
-        write!(f, "{}", parts_str)
+        write!(f, "{parts_str}")
     }
 }
 

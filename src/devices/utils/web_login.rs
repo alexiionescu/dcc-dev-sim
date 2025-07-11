@@ -122,7 +122,7 @@ pub async fn get_pid(server_addr: &str, token: &str) -> anyhow::Result<u32> {
     match post_request(
         None,
         server_addr,
-        format!("&token={}", token).as_str(),
+        format!("&token={token}").as_str(),
         ObjTypeOrRef::Type("Utils.Miscellaneous"),
         "GetProcessInfo",
         r#"{}"#.to_string(),

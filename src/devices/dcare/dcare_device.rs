@@ -84,12 +84,12 @@ impl DCareDevice {
 
     #[inline]
     fn get_device_id(pin: usize) -> String {
-        format!("__SIM_DCARE_{:03}", pin)
+        format!("__SIM_DCARE_{pin:03}")
     }
 
     #[inline]
     fn get_device_name(pin: usize) -> String {
-        format!("DcareEX Sim {:03}", pin)
+        format!("DcareEX Sim {pin:03}")
     }
 
     #[inline]
