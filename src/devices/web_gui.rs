@@ -89,7 +89,7 @@ pub(crate) async fn run() -> Result<(), anyhow::Error> {
     );
     if devices.is_empty() {
         tokio::fs::write(
-            LOGIN_CACHE_PATH,
+            login_cache_path,
             serde_json::to_string(&login_cache.unwrap())?,
         )
         .await?;
@@ -159,7 +159,7 @@ pub(crate) async fn run() -> Result<(), anyhow::Error> {
     }
 
     tokio::fs::write(
-        LOGIN_CACHE_PATH,
+        login_cache_path,
         serde_json::to_string(&login_cache.unwrap())?,
     )
     .await?;
@@ -304,7 +304,7 @@ pub(crate) async fn run_request() -> Result<(), anyhow::Error> {
     }
 
     tokio::fs::write(
-        LOGIN_CACHE_PATH,
+        login_cache_path,
         serde_json::to_string(&login_cache.unwrap())?,
     )
     .await?;
