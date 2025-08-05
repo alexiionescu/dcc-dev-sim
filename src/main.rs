@@ -43,6 +43,19 @@ enum ArgsCommand {
     CommHub {},
     #[clap(about = "Run Web GUI browser simulation")]
     WebGui {},
+    #[clap(about = "Run Web Request simulation")]
+    WebRequest {
+        #[clap(short = 't', long, help = "object type to request")]
+        otype: String,
+        #[clap(short = 'm', long, help = "object method to request")]
+        method: String,
+        #[clap(long, help = "history months to request", default_value = "1")]
+        months: u8,
+        #[clap(long, help = "use archive mode", default_value = "false")]
+        archive: bool,
+        #[clap(long, help = "max duration in seconds", default_value = "300")]
+        max_duration: u64,
+    },
 }
 
 mod utils;
@@ -60,6 +73,9 @@ async fn main() -> Result<(), anyhow::Error> {
         }
         ArgsCommand::WebGui {} => {
             web_gui::run().await?;
+        }
+        ArgsCommand::WebRequest { .. } => {
+            web_gui::run_request().await?;
         }
     }
     Ok(())
