@@ -7,7 +7,12 @@ pub(crate) struct Args {
     cmd: ArgsCommand,
     #[clap(short = 'v', action = ArgAction::Count, help = "verbosity level (e.g. -vvv)")]
     verbosity: u8,
-    #[clap(short = 'A', long, help = "admin hosting SSL host:port")]
+    #[clap(
+        short = 'A',
+        long,
+        help = "admin hosting SSL host:port",
+        default_value = "hosting.poltys.com:3339"
+    )]
     admin: String,
     #[clap(short = 'S', long, help = "server instance name")]
     server: String,
@@ -24,7 +29,8 @@ pub(crate) struct Args {
     #[clap(
         short = 'B',
         long,
-        help = "base device id (pin for DCare, mac address for CH, etc.)"
+        help = "base device id (pin for DCare, mac address for CH, etc.)",
+        default_value_t = 9999
     )]
     dev_id_base: usize,
     #[clap(short = 'j', help = "number of parallel jobs", default_value = "1")]
@@ -45,9 +51,19 @@ enum ArgsCommand {
     WebGui {},
     #[clap(about = "Run Web Request simulation")]
     WebRequest {
-        #[clap(short = 't', long, help = "object type to request")]
+        #[clap(
+            short = 't',
+            long,
+            help = "object type to request",
+            default_value = "Utils.Miscellaneous"
+        )]
         otype: String,
-        #[clap(short = 'm', long, help = "object method to request")]
+        #[clap(
+            short = 'm',
+            long,
+            help = "object method to request",
+            default_value = "GetProcessInfo"
+        )]
         method: String,
         #[clap(long, help = "history months to request", default_value = "1")]
         months: u8,

@@ -130,11 +130,10 @@ async fn run_dev_range(
                 for device in devices.iter_mut() {
                     match device.socket.recv(&mut data).await {
                         Ok(size) => {
-                            if size > 0 {
-                                if let Err(e) = device.process_recv_udp(&data[..size]).await {
+                            if size > 0
+                                && let Err(e) = device.process_recv_udp(&data[..size]).await {
                                     log!(1, "[CH_{:03}] Error processing udp data: {}", device.pin, e);
                                 }
-                            }
                         }
                         Err(e) => {
                             log!(1, "[CH_{:03}] Error receive udp data: {}", device.pin, e);

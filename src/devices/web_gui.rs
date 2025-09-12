@@ -245,7 +245,7 @@ pub(crate) async fn run_request() -> Result<(), anyhow::Error> {
         return Err(anyhow::anyhow!("request failed: {poltys_response_error}"));
     } else {
         log!(
-            1,
+            0,
             "Test request successful. Duration: {} ms",
             time.elapsed().as_millis()
         );
