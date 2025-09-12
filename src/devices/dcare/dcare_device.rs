@@ -132,31 +132,30 @@ impl DCareDevice {
     }
 
     pub async fn deinitialize(&mut self, server_addr: &str, token_pid: &str) {
-        if self.register_id != 0 {
-            if let Err(err) = self
+        if self.register_id != 0
+            && let Err(err) = self
                 .request_bulk_connect(server_addr, token_pid, false)
                 .await
-            {
-                log!(
-                    0,
-                    "[DCare_{:03}] Failed to disconnect bulk from server: {err}",
-                    self.pin
-                );
-            }
+        {
+            log!(
+                0,
+                "[DCare_{:03}] Failed to disconnect bulk from server: {err}",
+                self.pin
+            );
         }
-        if self.contact_id > 0 {
-            if let Err(err) = self.request_sign_out(server_addr, token_pid).await {
-                log!(
-                    0,
-                    "[DCare_{:03}] Failed to sign out contact: {err}",
-                    self.pin
-                );
-            }
+        if self.contact_id > 0
+            && let Err(err) = self.request_sign_out(server_addr, token_pid).await
+        {
+            log!(
+                0,
+                "[DCare_{:03}] Failed to sign out contact: {err}",
+                self.pin
+            );
         }
-        if self.status == 1 {
-            if let Err(err) = self.request_stop_device(server_addr, token_pid).await {
-                log!(0, "[DCare_{:03}] Failed to stop device: {err}", self.pin);
-            }
+        if self.status == 1
+            && let Err(err) = self.request_stop_device(server_addr, token_pid).await
+        {
+            log!(0, "[DCare_{:03}] Failed to stop device: {err}", self.pin);
         }
     }
 
@@ -170,6 +169,14 @@ impl DCareDevice {
                 .last_refresh_time
                 .is_some_and(|t| t.elapsed().as_secs() > 30)
         {
+            if !self.need_refresh && self.register_id == 0 {
+                log!(
+                    0,
+                    "[DCare_{:03}] UDP Register not working. Pleaase check server is reachable on UDP at {}",
+                    self.pin,
+                    server_addr,
+                );
+            }
             let instant = Instant::now();
             self.need_refresh = false;
             self.last_refresh_time = Some(instant);

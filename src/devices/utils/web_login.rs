@@ -1,4 +1,5 @@
 use core::str;
+use std::time::Duration;
 
 use crate::log;
 use serde::Serialize;
@@ -6,7 +7,7 @@ use serde_json::json;
 
 use super::web_data::*;
 
-pub async fn poltys_connect(
+async fn poltys_connect(
     admin: &str,
     user: &str,
     password: &str,
@@ -45,7 +46,7 @@ impl<'a> PoltysLoginReq<'a> {
     }
 }
 
-pub async fn login(
+async fn login(
     admin: &str,
     conn_res: &PoltysConnectRes,
     server: &str,
@@ -118,17 +119,36 @@ pub async fn renew_token(admin: &str, mut login_cache: PoltysLoginCache) -> Polt
     login_cache
 }
 
-pub async fn get_pid(server_addr: &str, token: &str) -> anyhow::Result<u32> {
-    match post_request(
-        None,
-        server_addr,
-        format!("&token={token}").as_str(),
-        ObjTypeOrRef::Type("Utils.Miscellaneous"),
-        "GetProcessInfo",
-        r#"{}"#.to_string(),
-    )
-    .await?
-    {
+pub async fn get_pid(
+    server_addr: &str,
+    token: &str,
+    client: Option<&reqwest::Client>,
+    mut connection_timeout: u64,
+) -> anyhow::Result<u32> {
+    log!(2, "Connecting to server instance ...");
+    let token_param = format!("&token={token}");
+    let mut tokio_check_timer = tokio::time::interval(Duration::from_secs(1));
+    match loop {
+        tokio::select! {
+            r = post_request(
+                client,
+                server_addr,
+                &token_param,
+                ObjTypeOrRef::Type("Utils.Miscellaneous"),
+                "GetProcessInfo",
+                r#"{}"#.to_string(),
+            ) => break r?,
+            _ = tokio_check_timer.tick() => {
+                connection_timeout -= 1;
+                if connection_timeout == 0 {
+                    return Err(anyhow::anyhow!("Connection timeout. Please check server {} is reachable on TCP.", server_addr));
+                }
+                if connection_timeout % 10 == 0 {
+                    log!(2, "Connecting to server instance ...{:2}s left", connection_timeout);
+                }
+            }
+        }
+    } {
         PoltysResponse::Err(poltys_response_error) => {
             if poltys_response_error.error == "ERR_BAD_PROCESS_ID" {
                 Ok(poltys_response_error.code) // code is the PID in this case
@@ -141,4 +161,61 @@ pub async fn get_pid(server_addr: &str, token: &str) -> anyhow::Result<u32> {
         PoltysResponse::GetPid(pinfo) => Ok(pinfo.pid),
         o => Err(anyhow::anyhow!("get_pid Unexpected response type: {o:?}")),
     }
+}
+
+const DATA_FOLDER: &str = "data";
+const LOGIN_CACHE_FILENAME: &str = "login_cache.json";
+const LOGIN_CACHE_PATH: &str = const_str::concat!(DATA_FOLDER, "/", LOGIN_CACHE_FILENAME);
+
+pub async fn login_with_cache() -> anyhow::Result<PoltysLoginCache> {
+    let args = &(*crate::ARGS);
+    let login_cache_path = args
+        .login_cache
+        .as_ref()
+        .map(|s| s.as_ref())
+        .unwrap_or(LOGIN_CACHE_PATH);
+
+    tokio::fs::create_dir_all(DATA_FOLDER).await?;
+    let mut login_cache = if args.no_login_cache {
+        None
+    } else {
+        tokio::fs::read(login_cache_path)
+            .await
+            .map(|data| serde_json::from_slice::<PoltysLoginCache>(&data).ok())
+            .ok()
+            .flatten()
+    };
+    if login_cache
+        .as_ref()
+        .is_none_or(|c| chrono::Utc::now().signed_duration_since(c.time).num_days() > 1)
+    {
+        let conn_res = poltys_connect(&args.admin, &args.user, &args.password).await?;
+        let login_res = login(&args.admin, &conn_res, &args.server).await?;
+        login_cache = Some(PoltysLoginCache::new(conn_res, login_res));
+        log!(
+            0,
+            "[Login] Login OK {}",
+            login_cache.as_ref().unwrap().address,
+        );
+        log!(
+            2,
+            "[Login] token={} time={}",
+            login_cache.as_ref().unwrap().token,
+            login_cache.as_ref().unwrap().time
+        );
+    }
+    let login_cache = login_cache.unwrap();
+    save_login_cache(&login_cache).await?;
+    Ok(login_cache)
+}
+
+pub async fn save_login_cache(login_cache: &PoltysLoginCache) -> anyhow::Result<()> {
+    let args = &(*crate::ARGS);
+    let login_cache_path = args
+        .login_cache
+        .as_ref()
+        .map(|s| s.as_ref())
+        .unwrap_or(LOGIN_CACHE_PATH);
+    tokio::fs::write(login_cache_path, serde_json::to_string(login_cache)?).await?;
+    Ok(())
 }

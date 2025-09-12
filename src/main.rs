@@ -35,6 +35,8 @@ pub(crate) struct Args {
     dev_id_base: usize,
     #[clap(short = 'j', help = "number of parallel jobs", default_value = "1")]
     concurrent_jobs: usize,
+    #[clap(long, help = "disable login cache", default_value_t = false)]
+    no_login_cache: bool,
 }
 
 mod devices;
